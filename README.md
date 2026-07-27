@@ -4,8 +4,8 @@ Rozszerzenie przeglądarki **Microsoft Edge / Chrome / Firefox** dla systemu **U
 
 | Przeglądarka | Pobierz |
 |---|---|
-| **Edge / Chrome** | [better-ukg-1.5.5-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.5/better-ukg-1.5.5-edge-chrome.zip) |
-| **Firefox** | [better-ukg-1.5.5-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.5/better-ukg-1.5.5-firefox.xpi) |
+| **Edge / Chrome** | [better-ukg-1.5.6-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-edge-chrome.zip) |
+| **Firefox** | [better-ukg-1.5.6-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-firefox.xpi) |
 
 ---
 
@@ -73,8 +73,8 @@ Pobierz paczkę odpowiednią dla swojej przeglądarki:
 
 | Przeglądarka | Pobierz |
 |---|---|
-| **Edge / Chrome** | [better-ukg-1.5.5-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.5/better-ukg-1.5.5-edge-chrome.zip) |
-| **Firefox** | [better-ukg-1.5.5-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.5/better-ukg-1.5.5-firefox.xpi) |
+| **Edge / Chrome** | [better-ukg-1.5.6-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-edge-chrome.zip) |
+| **Firefox** | [better-ukg-1.5.6-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-firefox.xpi) |
 
 Rozpakuj archiwum w dowolnym folderze (np. na pulpicie)
 
@@ -114,7 +114,7 @@ Kliknij ikonę puzzli na pasku przeglądarki i przypnij **Better UKG**, aby mie�
 
 ### Krok 1 – Pobierz plik
 
-Pobierz plik [better-ukg-1.5.5-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.5/better-ukg-1.5.5-firefox.xpi)
+Pobierz plik [better-ukg-1.5.6-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-firefox.xpi)
 
 ### Krok 2 – Zainstaluj
 
@@ -125,6 +125,11 @@ Gotowe — wtyczka jest zainstalowana na stałe i nie wymaga trybu dewelopera.
 ---
 
 ## Historia wersji
+
+### v1.5.6
+
+- **Bugfix salda urlopowe nie przeliczały się na dni** — na stronie *Time Off Request* UKG owinęło wartość salda dodatkowym `<span>` (`208.00<span>hrs</span>` → `<span>208.00<span>hrs</span></span>`). Wtyczka brała „pierwszy span", którym stał się zewnętrzny wrapper, więc konwersja na dni była pomijana i saldo zostawało w godzinach. Teraz liczbę czytamy z `<span>` o dokładnej treści `hrs` — działa dla starej i nowej struktury.
+- **Bugfix wtyczka liczyła na zakładkach pomocniczych** — domyślny widok timesheeta ma zakładki `Time Entry`, `Calc Detail`, `Counters`. Na dwóch ostatnich baner pokazywał ujemne saldo, a dni robocze zaznaczały się na czerwono. Teraz wtyczka liczy wyłącznie na głównej zakładce `Time Entry`; na pozostałych sprząta swoje elementy i nic nie pokazuje.
 
 ### v1.5.5
 
@@ -193,4 +198,4 @@ Gotowe — wtyczka jest zainstalowana na stałe i nie wymaga trybu dewelopera.
 
 > **Disclaimer:** This extension is for informational purposes only. The flex balance displayed is an estimate based on data read from the timesheet and may not reflect all factors affecting your working time. Always verify your hours independently using official UKG Pro reports.
 
-*Better UKG v1.5.5 by Marek Łoś · UKG Pro*
+*Better UKG v1.5.6 by Marek Łoś · UKG Pro*

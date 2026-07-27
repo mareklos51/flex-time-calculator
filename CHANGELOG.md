@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.5.6] – 2026-07-27
+
+### Naprawiono
+- **Salda urlopowe nie przeliczały się na dni po zmianie DOM w UKG** – na stronie *Time Off Request* UKG owinęło wartość salda dodatkowym `<span>` (`208.00<span>hrs</span>` → `<span>208.00<span>hrs</span></span>`). `convertVacationBalancesToDays()` brało „pierwszy `<span>`", którym stał się zewnętrzny wrapper o treści `208.00hrs` (a nie `hrs`), więc guard odrzucał wpis i saldo zostawało w godzinach. Teraz namierzamy `<span>` o dokładnej treści `hrs`/`days`, a liczbę czytamy z jego `previousSibling` – działa dla starej i nowej struktury. Ten sam fix objął `revertVacationBalancesToHours()`.
+- **Wtyczka liczyła saldo na zakładkach pomocniczych timesheeta** – domyślny widok timesheeta ma zakładki (`Time Entry`, `Calc Detail`, `Counters`). Wtyczka analizowała każdą tak samo, przez co na `Calc Detail`/`Counters` baner pokazywał ujemne saldo, a dni robocze zaznaczały się na czerwono. Nowy `isTimeEntryTab()` rozpoznaje aktywną zakładkę po `.c-page-tabs` (`aria-selected="true"` + `data-category="category-TIME_ENTRY"`, z fallbackiem na zwinięty dropdown). Poza `Time Entry` wtyczka sprząta swoje elementy (`removeFlexUI()`) i nic nie liczy; popup prosi o przejście na `Time Entry`. Brak paska zakładek (starszy/menedżerski układ) → zachowanie bez zmian.
+
 ## [1.5.5] – 2026-06-26
 
 ### Naprawiono

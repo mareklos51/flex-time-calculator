@@ -938,15 +938,20 @@
     if (!CFG.vacationInDays) return revertVacationBalancesToHours();
     let found = false;
 
-    // Request window: "208.00<span>hrs</span>" inside .c-accrual-balances__value
+    // Request window. UKG dodało zewnętrzny wrapper w v?:
+    //   stare: "208.00<span>hrs</span>"           (liczba = bezpośredni text-node .value)
+    //   nowe:  "<span>208.00<span>hrs</span></span>" (liczba zagnieżdżona w wrapperze)
+    // Namierzamy span z dokładnym tekstem "hrs", liczba to jego previousSibling —
+    // działa dla obu struktur.
     document.querySelectorAll('.c-accrual-balances__value:not([data-ftc-days])').forEach((el) => {
-      const hrsSpan = el.querySelector('span');
-      if (!hrsSpan || hrsSpan.textContent.trim() !== 'hrs') return;
-
-      const textNode = [...el.childNodes].find(
-        (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim() !== ''
+      const hrsSpan = [...el.querySelectorAll('span')].find(
+        (s) => s.textContent.trim() === 'hrs'
       );
-      if (!textNode) return;
+      if (!hrsSpan) return;
+
+      const textNode = hrsSpan.previousSibling;
+      if (!textNode || textNode.nodeType !== Node.TEXT_NODE || textNode.textContent.trim() === '')
+        return;
 
       const hrs = parseFloat(textNode.textContent.trim());
       if (isNaN(hrs)) return;
@@ -1008,11 +1013,11 @@
     document.querySelectorAll('.c-accrual-balances__value[data-ftc-days]').forEach((el) => {
       const orig = el.getAttribute('data-ftc-orig-text');
       if (!orig) return;
-      const hrsSpan = el.querySelector('span');
-      const textNode = [...el.childNodes].find(
-        (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim() !== ''
+      const hrsSpan = [...el.querySelectorAll('span')].find(
+        (s) => s.textContent.trim() === 'days'
       );
-      if (textNode) textNode.textContent = orig;
+      const textNode = hrsSpan ? hrsSpan.previousSibling : null;
+      if (textNode && textNode.nodeType === Node.TEXT_NODE) textNode.textContent = orig;
       if (hrsSpan) hrsSpan.textContent = 'hrs';
       el.removeAttribute('data-ftc-days');
       el.removeAttribute('data-ftc-orig-text');
@@ -1054,8 +1059,39 @@
     return TIMESHEET_HASH_PATTERNS.some((p) => window.location.hash.includes(p));
   }
 
+  /**
+   * Widok timesheeta ma zakładki (pasek `.c-page-tabs`): "Time Entry" (główna),
+   * "Calc Detail", "Counters". Wtyczka ma sens TYLKO na "Time Entry" — pozostałe
+   * mają inny układ wierszy, przez co baner pokazywał ujemne saldo, a dni
+   * zaznaczały się na czerwono. Aktywna zakładka ma `aria-selected="true"`,
+   * a "Time Entry" nosi `data-category="category-TIME_ENTRY"`.
+   * Brak paska (starszy/menedżerski układ) → traktujemy jak główny widok.
+   */
+  function isTimeEntryTab() {
+    if (!document.querySelector('.c-page-tabs')) return true;
+    // Pełna lista (desktop): aktywny przycisk ma aria-selected="true".
+    const selected = document.querySelector('.c-page-tabs__tab-button[aria-selected="true"]');
+    if (selected) return selected.getAttribute('data-category') === 'category-TIME_ENTRY';
+    // Zwinięty pasek (mobile): dropdown pokazuje nazwę aktywnej zakładki.
+    const collapsed = document.querySelector('.m-contains-selected-tab .c-page-tabs__tab-button-text');
+    if (collapsed) return collapsed.textContent.trim() === 'Time Entry';
+    return true;
+  }
+
+  /** Usuwa wszystkie elementy wstrzyknięte przez wtyczkę (baner, widgety, podświetlenia). */
+  function removeFlexUI() {
+    document.getElementById(BANNER_ID)?.remove();
+    document.querySelectorAll('.ftc-daily-widget').forEach((el) => el.remove());
+    document.querySelectorAll('.ftc-incomplete-row').forEach((el) =>
+      el.classList.remove('ftc-incomplete-row'));
+  }
+
   function tryCalculateAndShow() {
     if (!isTimesheetPage()) return false;
+    if (!isTimeEntryTab()) {
+      removeFlexUI();      // zakładka Calc Detail / Counters — nic nie liczymy
+      return true;          // strona obsłużona: świadomie nie pokazujemy banera
+    }
     const data = calculate();
     if (data) {
       injectBanner(data);
@@ -1093,7 +1129,9 @@
            node.querySelector?.('tr[data-group-date]') ||
            node.querySelector?.('.c-timesheet-header__date-carousel-title') ||
            node.matches?.('.c-accrual-balances__value') ||
-           node.querySelector?.('.c-accrual-balances__value'))
+           node.querySelector?.('.c-accrual-balances__value') ||
+           node.matches?.('.c-page-tabs') ||
+           node.querySelector?.('.c-page-tabs'))
         )
       );
       if (relevant) {
@@ -1111,8 +1149,12 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.action === 'getFlexData') {
-      const data = calculate();
-      sendResponse(data || { error: 'Timesheet nie jest widoczny na tej stronie.' });
+      if (isTimesheetPage() && !isTimeEntryTab()) {
+        sendResponse({ error: 'Przejdź na zakładkę „Time Entry", aby zobaczyć saldo.' });
+      } else {
+        const data = calculate();
+        sendResponse(data || { error: 'Timesheet nie jest widoczny na tej stronie.' });
+      }
     }
 
     if (msg.action === 'settingsUpdated') {
