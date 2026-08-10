@@ -277,6 +277,36 @@ tr.ftc-incomplete-row:hover td {
   background-color: rgba(248, 113, 113, 0.22) !important;
 }
 
+/* Ostrzeżenie o niezachowanym odpoczynku dobowym (11h) — pod widgetem delty
+   w komórce Calc. Total. Świadomie NIE maluje tła wiersza, żeby nie kolidować
+   z ftc-incomplete-row. Zwykły tekst inline (nie flex) — spacje między spanami
+   niosą odstęp i trafiają do textContent. */
+.ftc-rest-warning {
+  display: block;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: 'Courier New', 'Consolas', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  cursor: help;
+}
+
+.ftc-rest-warning .ftc-rw-rest {
+  font-weight: 700;
+}
+
+.ftc-rest-warning .ftc-rw-label {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
 /* Przycisk zamknięcia */
 #flex-time-calc-banner .ftc-close {
   margin-left: auto;

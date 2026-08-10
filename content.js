@@ -48,6 +48,14 @@
 
   const BANNER_ID            = 'flex-time-calc-banner';
   const CALC_TOTAL_TD_INDEX  = 5;    // indeks kolumny "Calc. Total" w TR timesheeta
+
+  // Kodeks pracy art. 132 §1: pracownikowi przysługuje co najmniej 11 godzin
+  // nieprzerwanego odpoczynku w każdej dobie. "Co najmniej" → dokładnie 11:00 jest OK.
+  const MIN_REST_MINUTES = 11 * 60;
+
+  // Elementy wstrzykiwane przez wtyczkę WEWNĄTRZ komórki Calc. Total. Trzeba je
+  // pomijać przy odczycie textContent tej komórki (getOriginalText).
+  const INJECTED_CELL_SELECTOR = '.ftc-daily-widget, .ftc-rest-warning';
   const POLL_INTERVAL_MS     = 500;
   const POLL_MAX_ATTEMPTS    = 40;   // 20 sekund czekania
 
@@ -92,14 +100,14 @@
   /**
    * Zwraca oryginalny tekst komórki: jeśli została przekonwertowana do HH:MM,
    * atrybut data-ftc-hhmm przechowuje oryginalną wartość "X.XX hrs".
-   * Jeśli komórka zawiera widget .ftc-daily-widget, pomija go przy odczycie textContent.
+   * Jeśli komórka zawiera elementy wstrzyknięte przez wtyczkę (widget delty,
+   * ostrzeżenie o odpoczynku), pomija je przy odczycie textContent.
    */
   function getOriginalText(el) {
     if (el.hasAttribute('data-ftc-hhmm')) return el.getAttribute('data-ftc-hhmm');
-    const widget = el.querySelector('.ftc-daily-widget');
-    if (!widget) return el.textContent;
+    if (!el.querySelector(INJECTED_CELL_SELECTOR)) return el.textContent;
     const clone = el.cloneNode(true);
-    clone.querySelector('.ftc-daily-widget').remove();
+    clone.querySelectorAll(INJECTED_CELL_SELECTOR).forEach((n) => n.remove());
     return clone.textContent.trim();
   }
 
@@ -240,6 +248,39 @@
   const MONTH_ABBR = { Jan:0, Feb:1, Mar:2, Apr:3, May:4, Jun:5,
                        Jul:6, Aug:7, Sep:8, Oct:9, Nov:10, Dec:11 };
 
+  /**
+   * Kontekst widocznego okresu timesheeta — wspólny dla kalkulacji salda i kontroli
+   * odpoczynku dobowego:
+   *   period          — zakres z nagłówka,
+   *   today           — dziś o 00:00,
+   *   effectiveToday  — dziś ograniczone do końca okresu (przyszłe wpisy się nie liczą),
+   *   dateFromAttr()  — "THU May 28" → Date (rok bierzemy z okresu, bo atrybut UKG go nie ma).
+   * Zwraca null, gdy nagłówek okresu nie jest jeszcze wyrenderowany.
+   */
+  function getPeriodContext() {
+    const titleEl = document.querySelector('span.c-timesheet-header__date-carousel-title');
+    if (!titleEl) return null;
+    const period = parsePeriodDates(titleEl.textContent);
+    if (!period) return null;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return {
+      titleEl,
+      period,
+      today,
+      effectiveToday: today < period.end ? today : period.end,
+      dateFromAttr(dateAttr) {
+        const parsed = parseDateAttr(dateAttr);
+        if (!parsed) return null;
+        const d = new Date(period.start.getFullYear(), parsed.month, parsed.day);
+        d.setHours(0, 0, 0, 0);
+        return d;
+      },
+    };
+  }
+
   function parseDateAttr(attr) {
     const m = (attr || '').trim().match(/^[A-Z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})$/);
     if (!m) return null;
@@ -282,45 +323,59 @@
     return countWorkingDays(tomorrow, periodEnd) === 0;
   }
 
-  function getTodayStartTime(today) {
+  /**
+   * Czyta kontrolkę czasu UKG (start_time / end_time) → minuty od północy.
+   *
+   * UKG renderuje godzinę w formacie 12-GODZINNYM: value="02:31" to 14:31, a znacznik
+   * am/pm siedzi w SUFIKSIE aria-label ("Fromam" / "Frompm" / "Toam" / "Topm").
+   * Nie da się użyć widocznego przycisku [data-entry-field] — UKG stempluje na nim
+   * "st_ampm" także przy polach end_time, więc nie rozróżnia początku od końca.
+   *
+   * Gdy sufiksu am/pm nie ma (inna konfiguracja najemcy), wartość jest traktowana
+   * jako 24-godzinna.
+   */
+  function parseClockInput(el) {
+    if (!el) return null;
+    const raw = (el.value || el.getAttribute('value') || '').trim();
+    const m = raw.match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    let hh = parseInt(m[1], 10);
+    const mm = parseInt(m[2], 10);
+    if (hh > 23 || mm > 59) return null;
+    const ampm = (el.getAttribute('aria-label') || '').toLowerCase().match(/(am|pm)$/);
+    if (ampm) {
+      hh = hh % 12;                      // 12:xx am → 00:xx
+      if (ampm[1] === 'pm') hh += 12;    // 12:xx pm → 12:xx
+    }
+    return hh * 60 + mm;
+  }
+
+  /** Godzina rozpoczęcia dzisiejszej, jeszcze niezamkniętej zmiany → minuty od północy. */
+  function getTodayStartMinutes(today) {
     const todayMonth = today.getMonth();
     const todayDay   = today.getDate();
     for (const row of document.querySelectorAll('tr[data-group-date][data-shift-id]')) {
       const parsed = parseDateAttr(row.getAttribute('data-group-date'));
       if (!parsed) continue;
       if (parsed.month !== todayMonth || parsed.day !== todayDay) continue;
-      const startInput = row.querySelector('input[name="start_time"]');
-      const endInput   = row.querySelector('input[name="end_time"]');
-      if (!startInput?.value) continue;
-      if (endInput?.value) continue;
-      return startInput.value;
+      const startMins = parseClockInput(row.querySelector('input[name="start_time"]'));
+      if (startMins === null) continue;
+      if (parseClockInput(row.querySelector('input[name="end_time"]')) !== null) continue;
+      return startMins;
     }
     return null;
   }
 
-  function parseTimeHHMM(timeStr) {
-    const m = (timeStr || '').match(/^(\d{1,2}):(\d{2})$/);
-    if (!m) return null;
-    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
-  }
-
   function calculate() {
-    // 1. Nagłówek okresu
-    const titleEl = document.querySelector('span.c-timesheet-header__date-carousel-title');
-    if (!titleEl) return null;
-
-    const period = parsePeriodDates(titleEl.textContent);
-    if (!period) return null;
+    // 1. Nagłówek okresu → zakres, "dziś" i konwerter dat wiersza
+    const ctx = getPeriodContext();
+    if (!ctx) return null;
+    const { titleEl, period, today, effectiveToday } = ctx;
 
     // Ustal osobę (z nagłówka) i miesiąc → rozwiąż wartości obowiązujące (etat, korekta).
     currentPerson   = getPersonContext();
     currentMonthKey = getMonthKey(period);
     EFF             = resolveEffective(currentPerson, currentMonthKey);
-
-    // Wyznacz "dziś" wcześnie — potrzebne do filtrowania wierszy przyszłych dat
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const effectiveToday = today < period.end ? today : period.end;
 
     // Pomocnik: konwertuje wynik parseDateAttr na obiekt Date (rok z okresu)
     function rowToDate(parsed) {
@@ -534,14 +589,11 @@
     if (today <= period.end) {
       isLastWorkingDay = isLastWorkingDayOfMonth(today, period.end);
       if (isLastWorkingDay && remainingMinutes > 0) {
-        const startTimeStr = getTodayStartTime(today);
-        if (startTimeStr !== null) {
-          const startMins = parseTimeHHMM(startTimeStr);
-          if (startMins !== null) {
-            const endMins = startMins + remainingMinutes;
-            if (endMins < 24 * 60) {
-              suggestedEndTime = fmt2(Math.floor(endMins / 60)) + ':' + fmt2(endMins % 60);
-            }
+        const startMins = getTodayStartMinutes(today);
+        if (startMins !== null) {
+          const endMins = startMins + remainingMinutes;
+          if (endMins < 24 * 60) {
+            suggestedEndTime = fmt2(Math.floor(endMins / 60)) + ':' + fmt2(endMins % 60);
           }
         }
       }
@@ -718,9 +770,9 @@
     document.querySelectorAll('tr[data-group-date].m-footer').forEach((row) => {
       row.querySelectorAll('td').forEach((td) => {
         if (td.hasAttribute('data-ftc-hhmm')) return;
-        // Usuń widget przed parsowaniem — nie może zabrudzić textContent
-        td.querySelector('.ftc-daily-widget')?.remove();
-        const text = td.textContent.trim();
+        // Czytaj wartość źródłową — komórka może już zawierać wstrzyknięty widget delty
+        // i/lub ostrzeżenie o odpoczynku, które nie mogą zabrudzić parsowanej liczby.
+        const text = getOriginalText(td).trim();
         const m = text.match(/^([\d.]+)\s*hrs?$/i);
         if (!m) return;
         const totalMin = Math.round(parseFloat(m[1]) * 60);
@@ -927,6 +979,185 @@
     });
   }
 
+  // ─── Kontrola odpoczynku dobowego (11h) ───────────────────────────────────────
+  //
+  // Kodeks pracy wymaga co najmniej 11 godzin nieprzerwanego odpoczynku między
+  // zakończeniem pracy jednego dnia a rozpoczęciem następnego. UKG tego nie pilnuje,
+  // więc liczymy to sami: dla każdej pary kolejnych DNI ZEGAROWYCH sprawdzamy lukę
+  // "ostatni koniec dnia D → pierwszy początek dnia D+1".
+  //
+  // Każdy dzień okresu trafia do jednego z trzech stanów:
+  //
+  //   ZEGAROWY   — ma wpis pracy z godzinami. Zna początek; koniec zna, o ile żadna
+  //                zmiana nie jest otwarta (Clock In bez Clock Out).
+  //   NIEPRZEJRZYSTY — pracowano, ale bez godzin: same Raw Hours (Business Trip,
+  //                nieoznaczone 8.00). Nie da się z tego policzyć przerwy, więc taki
+  //                dzień ZERWIE łańcuch — nie zgadujemy, kiedy ta praca się odbyła.
+  //   ODPOCZYNEK — nie pracowano: weekend, dzień bez wpisów albo sama absencja
+  //                (Vacation, Holiday, TOIL). Przeskakiwany — poprzedni koniec pracy
+  //                pozostaje aktualny.
+  //
+  // Wiersze absencji są ignorowane NAWET gdy mają godziny: odbiór TOIL 19:00–20:00
+  // czy Childcare PTO 15:00–15:20 to nie praca i nie może przedłużać dnia pracy.
+  //
+  // UWAGA — to NIE jest czwarte miejsce z regułami flex i celowo NIE rozróżnia
+  // TOIL / Holiday / pozostałych absencji tak, jak robią to calculate() i
+  // injectDailyFlexWidgets(). Tam chodzi o to, ile godzin się zalicza do salda;
+  // tutaj o jedno pytanie: czy w danym momencie pracowano. Każda absencja odpowiada
+  // na nie jednakowo („nie"), więc wystarczy sprawdzić, czy Time Off jest niepuste.
+  // Zmiana reguł flex nie powinna pociągać zmian w tej sekcji.
+
+  const DOW_PL = { MON: 'pn', TUE: 'wt', WED: 'śr', THU: 'czw', FRI: 'pt', SAT: 'sb', SUN: 'nd' };
+  const MONTH_PL = { Jan: 'sty', Feb: 'lut', Mar: 'mar', Apr: 'kwi', May: 'maj', Jun: 'cze',
+                     Jul: 'lip', Aug: 'sie', Sep: 'wrz', Oct: 'paź', Nov: 'lis', Dec: 'gru' };
+
+  /** "WED Jul 1" → "śr 1 lip" (na tooltip). Przy nieznanym formacie zwraca wejście. */
+  function formatDateAttrPL(dateAttr) {
+    const m = (dateAttr || '').trim().match(/^([A-Z]{3})\s+([A-Za-z]{3})\s+(\d{1,2})$/);
+    if (!m) return dateAttr || '';
+    return `${DOW_PL[m[1]] || m[1]} ${parseInt(m[3], 10)} ${MONTH_PL[m[2]] || m[2]}`;
+  }
+
+  /** Minuty od północy (mogą przekroczyć 1440 po zmianie przez północ) → "HH:MM". */
+  function formatClock(minutes) {
+    const m = ((minutes % 1440) + 1440) % 1440;
+    return fmt2(Math.floor(m / 60)) + ':' + fmt2(m % 60);
+  }
+
+  /**
+   * Zbiera godziny pracy per dzień z wierszy wpisów.
+   * Zwraca { dateAttr → { start, end, endUnknown, hasOpaqueWork } } w minutach od północy
+   * (end może przekroczyć 1440, gdy zmiana przechodzi przez północ).
+   */
+  function collectWorkDayTimes() {
+    const days = {};
+
+    document.querySelectorAll('tr[data-group-date][data-shift-id]').forEach((row) => {
+      const dateAttr = row.getAttribute('data-group-date');
+      const day = days[dateAttr] || (days[dateAttr] = {
+        start: null, end: null, endUnknown: false, hasOpaqueWork: false,
+      });
+
+      // Absencje nie są pracą — pomijamy je nawet z wpisanymi godzinami.
+      const timeOffInput = row.querySelector('input[aria-label="Time Off"]');
+      const timeOff = timeOffInput
+        ? (timeOffInput.value || timeOffInput.getAttribute('value') || '').trim()
+        : '';
+      if (timeOff) return;
+
+      const startMins = parseClockInput(row.querySelector('input[name="start_time"]'));
+      const endMins   = parseClockInput(row.querySelector('input[name="end_time"]'));
+
+      if (startMins !== null && day.start === null) day.start = startMins;
+      else if (startMins !== null && startMins < day.start) day.start = startMins;
+
+      if (startMins !== null && endMins !== null) {
+        // Koniec przed początkiem → zmiana przeszła przez północ, koniec należy do D+1.
+        const endAbs = endMins < startMins ? endMins + 1440 : endMins;
+        if (day.end === null || endAbs > day.end) day.end = endAbs;
+        return;
+      }
+      if (startMins !== null) {
+        day.endUnknown = true;   // Clock In bez Clock Out — dzień jeszcze w toku
+        return;
+      }
+
+      // Brak godzin zegarowych, ale wpisane Raw Hours → praca o nieznanych godzinach.
+      const rawInput = row.querySelector('input[aria-label="Raw Total"]');
+      const rawHours = parseFloat(
+        rawInput ? (rawInput.value || rawInput.getAttribute('value') || '') : ''
+      );
+      if (!isNaN(rawHours) && rawHours > 0) day.hasOpaqueWork = true;
+    });
+
+    return days;
+  }
+
+  /**
+   * Zwraca listę naruszeń odpoczynku dobowego:
+   *   [{ dateAttr, restMinutes, prevDateAttr, prevEndMinutes, startMinutes }]
+   * gdzie dateAttr to dzień, w którym pracę rozpoczęto za wcześnie.
+   */
+  function findRestViolations() {
+    const ctx = getPeriodContext();
+    if (!ctx) return [];
+
+    const entries = Object.entries(collectWorkDayTimes())
+      .map(([dateAttr, day]) => {
+        const date = ctx.dateFromAttr(dateAttr);
+        return date ? { dateAttr, date, ...day } : null;
+      })
+      .filter((e) => e && e.date <= ctx.effectiveToday)
+      .sort((a, b) => a.date - b.date);
+
+    const violations = [];
+    let prev = null;   // ostatni dzień zegarowy o ZNANYM końcu pracy
+
+    for (const e of entries) {
+      if (e.start === null) {
+        // Nie ma godzin zegarowych: praca bez godzin zerywa łańcuch, absencja go nie rusza.
+        if (e.hasOpaqueWork) prev = null;
+        continue;
+      }
+
+      if (prev) {
+        const dayGap = Math.round((e.date - prev.date) / 86400000);
+        // Nakładające się wpisy dałyby wartość ujemną — pokazujemy 0, nadal jako naruszenie.
+        const restMinutes = Math.max(0, dayGap * 1440 + e.start - prev.end);
+        if (restMinutes < MIN_REST_MINUTES) {
+          violations.push({
+            dateAttr:       e.dateAttr,
+            restMinutes,
+            startMinutes:   e.start,
+            prevDateAttr:   prev.dateAttr,
+            prevEndMinutes: prev.end,
+          });
+        }
+      }
+
+      // Dzień z otwartą zmianą nie ma znanego końca → następny dzień nie ma z czym się równać.
+      prev = (e.end !== null && !e.endUnknown)
+        ? { dateAttr: e.dateAttr, date: e.date, end: e.end }
+        : null;
+    }
+
+    return violations;
+  }
+
+  /**
+   * Wstrzykuje ostrzeżenie do stopki dnia, w którym pracę rozpoczęto przed upływem
+   * 11h odpoczynku — pod widget delty, bez malowania tła (żeby nie kolidować
+   * z ftc-incomplete-row).
+   */
+  function injectRestWarnings() {
+    if (!isTimesheetPage()) return;
+
+    document.querySelectorAll('.ftc-rest-warning').forEach((el) => el.remove());
+
+    findRestViolations().forEach((v) => {
+      const footer = document.querySelector(`tr[data-group-date="${v.dateAttr}"].m-footer`);
+      if (!footer) return;
+      const tds = footer.querySelectorAll('td');
+      if (tds.length <= CALC_TOTAL_TD_INDEX) return;
+
+      const earliestStart = formatClock(v.prevEndMinutes + MIN_REST_MINUTES);
+      const badge = document.createElement('div');
+      badge.className = 'ftc-rest-warning';
+      badge.title =
+        `Odpoczynek dobowy ${formatMinutes(v.restMinutes)} (minimum ${formatMinutes(MIN_REST_MINUTES)})\n`
+        + `${formatDateAttrPL(v.prevDateAttr)} koniec ${formatClock(v.prevEndMinutes)}`
+        + ` → ${formatDateAttrPL(v.dateAttr)} start ${formatClock(v.startMinutes)}\n`
+        + `Brakuje ${formatMinutes(MIN_REST_MINUTES - v.restMinutes)}.`;
+      // Spacje między spanami są celowe — badge jest zwykłym tekstem inline (nie flexem),
+      // więc niosą odstęp i trafiają do textContent.
+      badge.innerHTML =
+        `<span class="ftc-rw-icon">⚠️</span> `
+        + `<span class="ftc-rw-rest">${formatMinutes(v.restMinutes)}</span> `
+        + `<span class="ftc-rw-label">odpoczynku — od ${earliestStart}</span>`;
+      tds[CALC_TOTAL_TD_INDEX].appendChild(badge);
+    });
+  }
+
   // ─── Konwersja sald urlopowych z godzin na dni ────────────────────────────────
 
   function isVacationPage() {
@@ -1082,6 +1313,7 @@
   function removeFlexUI() {
     document.getElementById(BANNER_ID)?.remove();
     document.querySelectorAll('.ftc-daily-widget').forEach((el) => el.remove());
+    document.querySelectorAll('.ftc-rest-warning').forEach((el) => el.remove());
     document.querySelectorAll('.ftc-incomplete-row').forEach((el) =>
       el.classList.remove('ftc-incomplete-row'));
   }
@@ -1098,6 +1330,7 @@
       if (CFG.hhmmFormat) convertTimesheetTotalsToHHMM();
       else revertTimesheetTotals();
       injectDailyFlexWidgets();
+      injectRestWarnings();      // po widgetach — badge ląduje pod deltą w tej samej komórce
       highlightIncompleteDays();
       return true;
     }
