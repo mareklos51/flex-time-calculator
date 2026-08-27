@@ -14,6 +14,9 @@ functionality-suggestions.md
 # Archiwum ZIP — generowane lokalnie
 *.zip
 
+# Paczki Firefox podpisane przez AMO — dodawane ręcznie do release'u, nie do repo
+*.xpi
+
 # Systemy operacyjne
 .DS_Store
 Thumbs.db
