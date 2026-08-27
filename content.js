@@ -5,8 +5,9 @@
  * Algorytm (uproszczony — pełna formuła w calculate()):
  *  1. Pobierz zakres okresu z nagłówka timesheeta (span.c-timesheet-header__date-carousel-title)
  *  2. Zsumuj "Calc. Total" z m-footer ≤ dziś (tr[data-group-date].m-footer, TD[5])
- *  3. Odejmij Overtime Payout i TOIL; wykryj Holiday/absencje (anulują normę dnia)
- *  4. Saldo = przepracowane(−OT−TOIL) − norma_minionych_dni + korekty (TOIL/absencje/ręczna)
+ *  3. Odejmij Overtime Payout i TOIL minionych dni; wykryj Holiday/absencje (anulują normę dnia)
+ *  4. Saldo = przepracowane(−OT−TOIL_minione) − norma_minionych_dni
+ *             − TOIL_całego_miesiąca (także zaplanowany na przyszłe dni) + korekty
  *  5. Wstrzyknij baner + dzienne widgety; podświetl niedokończone dni
  */
 
@@ -53,9 +54,15 @@
   // nieprzerwanego odpoczynku w każdej dobie. "Co najmniej" → dokładnie 11:00 jest OK.
   const MIN_REST_MINUTES = 11 * 60;
 
+  // Kodeks pracy art. 133 §1: w każdym tygodniu przysługuje co najmniej 35 godzin
+  // nieprzerwanego odpoczynku (11h odpoczynku dobowego + 24h). "Co najmniej" →
+  // dokładnie 35:00 jest OK. Praktyczne przełożenie: przerwa obejmująca weekend
+  // musi mieć ≥35h, więc po pracy w sobotę do 21:00 poniedziałek startuje od 08:00.
+  const MIN_WEEKLY_REST_MINUTES = 35 * 60;
+
   // Elementy wstrzykiwane przez wtyczkę WEWNĄTRZ komórki Calc. Total. Trzeba je
   // pomijać przy odczycie textContent tej komórki (getOriginalText).
-  const INJECTED_CELL_SELECTOR = '.ftc-daily-widget, .ftc-rest-warning';
+  const INJECTED_CELL_SELECTOR = '.ftc-daily-widget, .ftc-rest-warning, .ftc-weekly-rest-warning, .ftc-ot-warning';
   const POLL_INTERVAL_MS     = 500;
   const POLL_MAX_ATTEMPTS    = 40;   // 20 sekund czekania
 
@@ -366,6 +373,51 @@
     return null;
   }
 
+  /**
+   * Godziny "Overtime Payout" per dzień: { dateAttr → minuty }.
+   *
+   * Podejście odporne na zmienną liczbę kolumn (np. dodatkowe pola Accounting):
+   *
+   * 1. DETEKCJA ACTIVITY: szukamy input[aria-label="Activity"] w wierszu wpisu.
+   *    UKG renderuje pole Activity jako kontrolkę z input-em, którego atrybut
+   *    i właściwość .value zawiera nazwę wybranej aktywności.
+   *
+   * 2. CALC. TOTAL: w wierszach wpisów godziny są liczbami dziesiętnymi ("8.02",
+   *    nie "8.02 hrs"). RawTotal i CalcTotal to jedyne TD z czystą liczbą dziesiętną.
+   *    CalcTotal to zawsze DRUGI taki TD (RawTotal jest pierwszy).
+   *
+   * Jedno źródło prawdy dla salda (calculate), widgetów dziennych i alertu nadgodzin.
+   */
+  function collectOvertimePayoutByDate() {
+    const byDate = {};
+    document.querySelectorAll('tr[data-group-date][data-shift-id]').forEach((row) => {
+      const activityInput = row.querySelector('input[aria-label="Activity"]');
+      if (!activityInput) return;
+
+      const activityValue =
+        activityInput.value ||                       // właściwość DOM (żywa strona)
+        activityInput.getAttribute('value') || '';   // atrybut HTML (snapshot)
+
+      if (!activityValue.includes('Overtime Payout')) return;
+
+      const tds = [...row.querySelectorAll('td')];
+      const decimalTds = tds.filter((td) => {
+        const t = td.textContent.replace(/\s+/g, ' ').trim();
+        return /^\d+\.\d+$/.test(t);
+      });
+
+      // decimalTds[0] = RawTotal, decimalTds[1] = CalcTotal
+      const calcTd = decimalTds[1] ?? decimalTds[0];
+      if (!calcTd) return;
+
+      const mins = Math.round(parseFloat(calcTd.textContent.replace(/\s+/g, '')) * 60);
+      if (isNaN(mins)) return;
+      const dateAttr = row.getAttribute('data-group-date');
+      byDate[dateAttr] = (byDate[dateAttr] || 0) + mins;
+    });
+    return byDate;
+  }
+
   function calculate() {
     // 1. Nagłówek okresu → zakres, "dziś" i konwerter dat wiersza
     const ctx = getPeriodContext();
@@ -406,42 +458,10 @@
     });
 
     // 2b. Odejmij godziny z wpisów "Overtime Payout" — nie wliczają się do flex.
-    //
-    // Podejście odporne na zmienną liczbę kolumn (np. dodatkowe pola Accounting):
-    //
-    // 1. DETEKCJA ACTIVITY: szukamy input[aria-label="Activity"] w wierszu wpisu.
-    //    UKG renderuje pole Activity jako kontrolkę z input-em, którego atrybut
-    //    i właściwość .value zawiera nazwę wybranej aktywności.
-    //
-    // 2. CALC. TOTAL: w wierszach wpisów godziny są liczbami dziesiętnymi ("8.02",
-    //    nie "8.02 hrs"). RawTotal i CalcTotal to jedyne TD z czystą liczbą dziesiętną.
-    //    CalcTotal to zawsze DRUGI taki TD (RawTotal jest pierwszy).
+    //     Szczegóły detekcji: collectOvertimePayoutByDate().
+    const otPayoutByDateCalc = collectOvertimePayoutByDate();
     let overtimePayoutMinutes = 0;
-    document.querySelectorAll('tr[data-group-date][data-shift-id]').forEach((row) => {
-      // 1. Sprawdź Activity via input[aria-label="Activity"]
-      const activityInput = row.querySelector('input[aria-label="Activity"]');
-      if (!activityInput) return;
-
-      const activityValue =
-        activityInput.value ||                       // właściwość DOM (żywa strona)
-        activityInput.getAttribute('value') || '';   // atrybut HTML (snapshot)
-
-      if (!activityValue.includes('Overtime Payout')) return;
-
-      // 2. Znajdź CalcTotal: drugi TD z czystą liczbą dziesiętną
-      const tds = [...row.querySelectorAll('td')];
-      const decimalTds = tds.filter((td) => {
-        const t = td.textContent.replace(/\s+/g, ' ').trim();
-        return /^\d+\.\d+$/.test(t);
-      });
-
-      // decimalTds[0] = RawTotal, decimalTds[1] = CalcTotal
-      const calcTd = decimalTds[1] ?? decimalTds[0];
-      if (!calcTd) return;
-
-      const hoursText = calcTd.textContent.replace(/\s+/g, '').trim();
-      overtimePayoutMinutes += Math.round(parseFloat(hoursText) * 60);
-    });
+    Object.values(otPayoutByDateCalc).forEach((m) => { overtimePayoutMinutes += m; });
 
     // 2c. Wykryj wpisy "Time Off: Holiday" — nie są dniami roboczymi, pokazujemy osobno.
     //     Skanujemy WSZYSTKIE wpisy miesiąca (nie tylko ≤ dziś) dla celów wyświetlania normy.
@@ -473,7 +493,7 @@
     //     Wiersze Time Off mają inną strukturę niż wpisy pracy: godziny są w
     //     input[aria-label="Raw Total"], a nie w czystym decimal TD (jak w OT Payout).
     let toilMinutes = 0;
-    const toilByDateCalc = {};   // dateAttr → TOIL minut (do obliczenia fullToilNorm)
+    const toilByDateCalc = {};   // dateAttr → TOIL minut (do rozbicia na miniony/przyszły)
     document.querySelectorAll('tr[data-group-date][data-shift-id]').forEach((row) => {
       const timeOffInput = row.querySelector('input[aria-label="Time Off"]');
       if (!timeOffInput) return;
@@ -552,37 +572,67 @@
       ? Math.round(EFF.manualNorm * 60)
       : fullMonthWorkingDays * normPerDay;
 
-    // Pełne dni TOIL (cały m-footer = TOIL, brak zwykłej pracy): norma za te dni nie obowiązuje —
-    // pracownik wziął dzień wolny z banku flex, więc kosztem jest tylko TOIL, nie norma vs 0h.
-    // fullToilNormElapsedMinutes anuluje normę tych dni w formule salda.
-    let fullToilNormElapsedMinutes = 0;
+    // ── TOIL: jedno odjęcie z banku flex, norma dnia liczona normalnie ──────────
+    //
+    // Model: godziny TOIL wchodzą do Calc. Total dnia (UKG je tam wpisuje), więc pokrywają
+    // normę na równi z pracą, ale są wypłatą z banku flex. Stąd dla każdego dnia:
+    //
+    //     delta_dnia = footer − OT − norma − TOIL
+    //
+    // TOIL jest odejmowany DOKŁADNIE RAZ. Sprawdzenia:
+    //   • pełny dzień TOIL  (footer 8, TOIL 8):        8 − 8 − 8 = −8:00  ✔ bank płaci cały dzień
+    //   • częściowy TOIL    (footer 8.65, TOIL 1.00):  8.65 − 8 − 1 = −0.35  ✔ 0.65h nadwyżki
+    //                                                  ponad normę minus 1h wypłacona z banku
+    //   • TOIL + praca      (footer 10, TOIL 8):       10 − 8 − 8 = −6:00  ✔ 2h realnej pracy na plus
+    //
+    // Dwa rodzaje TOIL wg daty:
+    //   - toilElapsedMinutes — dni ≤ dziś; TYLKO te godziny siedzą w totalWorkedMinutes
+    //     (krok 2 sumuje m-footer wyłącznie dla dat ≤ dziś), więc tylko one są z niego odjęte.
+    //   - futureToilAdjustMinutes — dni > dziś. Zaplanowane wolne z banku obciąża saldo już
+    //     w chwili wpisania (środa: wolne zaklepane na piątek → saldo spada dziś), a dzień
+    //     przyszły jest w całości poza totalWorked/normElapsed. Dlatego wnosimy go osobno
+    //     tą samą formułą (footer − norma − TOIL) — dzięki temu saldo NIE drgnie w momencie,
+    //     gdy ten dzień stanie się miniony.
+    let toilElapsedMinutes       = 0;
+    let futureToilAdjustMinutes  = 0;
     for (const [dateAttr, toilMins] of Object.entries(toilByDateCalc)) {
       const parsed = parseDateAttr(dateAttr);
       if (!parsed) continue;
       const rowDate = rowToDate(parsed);
-      if (!rowDate || rowDate > effectiveToday) continue;
-      const dow = rowDate.getDay();
-      if (dow === 0 || dow === 6) continue;
-      const footerRow = document.querySelector(`tr[data-group-date="${dateAttr}"].m-footer`);
-      if (!footerRow) continue;
-      const ftds = footerRow.querySelectorAll('td');
-      if (ftds.length <= CALC_TOTAL_TD_INDEX) continue;
-      const footerTotal = parseHoursToMinutes(getOriginalText(ftds[CALC_TOTAL_TD_INDEX]));
-      if (footerTotal > 0 && toilMins >= footerTotal) {
-        fullToilNormElapsedMinutes += normPerDay;
+      if (!rowDate) continue;
+      if (rowDate <= effectiveToday) {
+        toilElapsedMinutes += toilMins;
+        continue;                       // norma i footer tego dnia są już w normElapsed/totalWorked
       }
+      const dow = rowDate.getDay();
+      const dayNorm = (dow === 0 || dow === 6) ? 0 : normPerDay;
+      const footerRow = document.querySelector(`tr[data-group-date="${dateAttr}"].m-footer`);
+      const ftds = footerRow ? footerRow.querySelectorAll('td') : null;
+      const footerTotal = (ftds && ftds.length > CALC_TOTAL_TD_INDEX)
+        ? parseHoursToMinutes(getOriginalText(ftds[CALC_TOTAL_TD_INDEX]))
+        : 0;
+      // Zabezpieczenie: gdyby UKG jeszcze nie doliczyło TOIL do footera, przyjmij same
+      // godziny TOIL jako pokrycie dnia (inaczej dzień policzyłby się jako −norma −TOIL).
+      const credited = Math.max(footerTotal, toilMins);
+      futureToilAdjustMinutes += credited - dayNorm - toilMins;
     }
+    const toilFutureMinutes = toilMinutes - toilElapsedMinutes;
 
-    totalWorkedMinutes -= overtimePayoutMinutes + toilMinutes;
+    // Z przepracowanych odejmujemy tylko TOIL minionych dni — przyszłego TOIL nigdy w tej
+    // sumie nie było (krok 2 bierze wyłącznie m-footer ≤ dziś); wnosi go futureToilAdjust.
+    totalWorkedMinutes -= overtimePayoutMinutes + toilElapsedMinutes;
 
     const correctionMinutes = Math.round(EFF.correctionHours * 60);
 
     // Formuła salda:
-    //   saldo = przepracowane_bez_TOIL − norma_bez_pełnych_dni_TOIL − TOIL + korekta + absenceAdj
+    //   saldo = przepracowane(−OT−TOIL_minione) − norma_minionych_dni
+    //           + futureToilAdjust (dni przyszłe z TOIL, tą samą formułą) + korekta + absenceAdj
     // absenceAdj: norma za dni absencji (Blood Donation, itp.) gdzie UKG nie wykazało godzin
-    // (totalWorked jest już po odjęciu toilMinutes, stąd odejmujemy toilMinutes jeszcze raz)
-    const balanceMinutes   = totalWorkedMinutes - normElapsedMinutes + fullToilNormElapsedMinutes - toilMinutes + correctionMinutes + absenceNormAdjustMinutes;
-    const remainingMinutes = normFullMonthMinutes - totalWorkedMinutes - correctionMinutes;
+    const balanceMinutes   = totalWorkedMinutes - normElapsedMinutes + futureToilAdjustMinutes + correctionMinutes + absenceNormAdjustMinutes;
+    // Pozostało do wyrobienia: norma miesiąca pomniejszona o CAŁY TOIL miesiąca — każda
+    // godzina TOIL pokrywa godzinę normy (płaci za nią bank flex), więc nie trzeba jej
+    // przepracować. Dotyczy też TOIL zaplanowanego na przyszłe dni.
+    const remainingMinutes = normFullMonthMinutes - toilMinutes - totalWorkedMinutes - correctionMinutes;
 
     let isLastWorkingDay = false;
     let suggestedEndTime = null;
@@ -609,6 +659,7 @@
       remainingMinutes,
       overtimePayoutMinutes,
       toilMinutes,
+      toilFutureMinutes,
       correctionMinutes,
       holidayCount,
       holidayMinutes,
@@ -639,6 +690,7 @@
       remainingMinutes,
       overtimePayoutMinutes,
       toilMinutes,
+      toilFutureMinutes,
       correctionMinutes,
       holidayCount,
       holidayMinutes,
@@ -656,10 +708,14 @@
          </span>`
       : '';
 
+    // TOIL zaplanowany na przyszłe dni obciąża saldo już teraz — sygnalizujemy to w etykiecie.
+    const toilPlannedNote = (toilFutureMinutes > 0)
+      ? ` (w tym ${formatMinutes(toilFutureMinutes)}h zaplanowane)`
+      : '';
     const otNote = (overtimePayoutMinutes > 0 || toilMinutes > 0)
       ? `<span class="ftc-sep">│</span>
-         <span class="ftc-ot" title="Godziny wykluczone z kalkulacji flex">
-           🔒${overtimePayoutMinutes > 0 ? ` OT: ${formatMinutes(overtimePayoutMinutes)}h` : ''}${toilMinutes > 0 ? ` TOIL: ${formatMinutes(toilMinutes)}h` : ''}
+         <span class="ftc-ot" title="Godziny wykluczone z kalkulacji flex. TOIL to wypłata z banku flex — pomniejsza saldo od razu po wpisaniu, także gdy wolne jest zaplanowane na przyszły dzień.">
+           🔒${overtimePayoutMinutes > 0 ? ` OT: ${formatMinutes(overtimePayoutMinutes)}h` : ''}${toilMinutes > 0 ? ` TOIL: ${formatMinutes(toilMinutes)}h${toilPlannedNote}` : ''}
          </span>`
       : '';
 
@@ -830,20 +886,7 @@
     });
 
     // Overtime Payout per dzień — spójne z logiką bannera (odejmujemy per dzień)
-    const otPayoutByDate = {};
-    document.querySelectorAll('tr[data-group-date][data-shift-id]').forEach((row) => {
-      const activityInput = row.querySelector('input[aria-label="Activity"]');
-      if (!activityInput) return;
-      const actVal = activityInput.value || activityInput.getAttribute('value') || '';
-      if (!actVal.includes('Overtime Payout')) return;
-      const dateAttr = row.getAttribute('data-group-date');
-      const tds = [...row.querySelectorAll('td')];
-      const decimalTds = tds.filter((td) => /^\d+\.\d+$/.test(td.textContent.replace(/\s+/g, '').trim()));
-      const calcTd = decimalTds[1] ?? decimalTds[0];
-      if (!calcTd) return;
-      const mins = Math.round(parseFloat(calcTd.textContent.replace(/\s+/g, '')) * 60);
-      otPayoutByDate[dateAttr] = (otPayoutByDate[dateAttr] || 0) + mins;
-    });
+    const otPayoutByDate = collectOvertimePayoutByDate();
 
     // Zbierz i posortuj wiersze m-footer chronologicznie
     const today = new Date();
@@ -866,25 +909,28 @@
     footerRows.forEach(({ row, parsed, dateAttr }) => {
       const rowDate = new Date(today.getFullYear(), parsed.month, parsed.day);
       rowDate.setHours(0, 0, 0, 0);
-      if (rowDate > today) return;
 
       // Pomiń weekendy (norma = 0, przepracowane = 0)
       const dow = rowDate.getDay();
       if (dow === 0 || dow === 6) return;
 
+      const toilForDay = toilByDate[dateAttr] || 0;
+      // Dni przyszłe co do zasady pomijamy (nic jeszcze nie zarobiono), ALE zaplanowany TOIL
+      // obciąża bank flex już w chwili wpisania — tak samo liczy go baner. Bez tego wyjątku
+      // ∑ ostatniego widgetu rozjeżdżałoby się z saldem u góry.
+      if (rowDate > today && toilForDay === 0) return;
+
       const tds = row.querySelectorAll('td');
       if (tds.length <= CALC_TOTAL_TD_INDEX) return;
-      const rawMinutes = parseHoursToMinutes(getOriginalText(tds[CALC_TOTAL_TD_INDEX]));
+      const footerMinutes = parseHoursToMinutes(getOriginalText(tds[CALC_TOTAL_TD_INDEX]));
+      // To samo zabezpieczenie co w calculate(): gdyby UKG nie doliczyło TOIL do footera.
+      const rawMinutes = Math.max(footerMinutes, toilForDay);
       if (rawMinutes === 0) return; // dzień bez godzin — brak widgetu
 
-      // Odejmij OT Payout i TOIL — spójne z kalkulacją bannera:
-      // - pełny dzień TOIL (workedMinutes == 0): koszt = tylko TOIL, norma nie obowiązuje
-      // - częściowy TOIL + praca: koszt = deficyt_pracy + TOIL
-      const toilForDay = toilByDate[dateAttr] || 0;
-      const workedMinutes = rawMinutes - (otPayoutByDate[dateAttr] || 0) - toilForDay;
-      const dayDelta = workedMinutes === 0 && toilForDay > 0
-        ? -toilForDay
-        : workedMinutes - normPerDay - toilForDay;
+      // delta = footer − OT − norma − TOIL. Identyczna formuła jak w calculate():
+      // godziny TOIL pokrywają normę (są w footerze), ale są wypłatą z banku flex,
+      // więc odejmujemy je DOKŁADNIE RAZ. Pełny dzień TOIL: 8 − 8 − 8 = −8:00.
+      const dayDelta = rawMinutes - (otPayoutByDate[dateAttr] || 0) - normPerDay - toilForDay;
       runningBalance += dayDelta;
 
       const deltaClass = dayDelta >= 0 ? 'ftc-dw-pos' : 'ftc-dw-neg';
@@ -1018,6 +1064,15 @@
     return `${DOW_PL[m[1]] || m[1]} ${parseInt(m[3], 10)} ${MONTH_PL[m[2]] || m[2]}`;
   }
 
+  const DOW_PL_BY_DOW = ['nd', 'pn', 'wt', 'śr', 'czw', 'pt', 'sb'];
+  const MONTH_PL_BY_IDX = ['sty', 'lut', 'mar', 'kwi', 'maj', 'cze',
+                           'lip', 'sie', 'wrz', 'paź', 'lis', 'gru'];
+
+  /** Date → "pn 31 sie" (na tooltip/badge; ta sama konwencja co formatDateAttrPL). */
+  function formatDatePL(date) {
+    return `${DOW_PL_BY_DOW[date.getDay()]} ${date.getDate()} ${MONTH_PL_BY_IDX[date.getMonth()]}`;
+  }
+
   /** Minuty od północy (mogą przekroczyć 1440 po zmianie przez północ) → "HH:MM". */
   function formatClock(minutes) {
     const m = ((minutes % 1440) + 1440) % 1440;
@@ -1078,17 +1133,25 @@
    *   [{ dateAttr, restMinutes, prevDateAttr, prevEndMinutes, startMinutes }]
    * gdzie dateAttr to dzień, w którym pracę rozpoczęto za wcześnie.
    */
-  function findRestViolations() {
-    const ctx = getPeriodContext();
-    if (!ctx) return [];
-
-    const entries = Object.entries(collectWorkDayTimes())
+  /**
+   * collectWorkDayTimes() wzbogacone o Date i posortowane rosnąco, z odcięciem dni
+   * przyszłych. Wspólne wejście dla kontroli odpoczynku dobowego i tygodniowego.
+   */
+  function sortedWorkDayEntries(ctx) {
+    return Object.entries(collectWorkDayTimes())
       .map(([dateAttr, day]) => {
         const date = ctx.dateFromAttr(dateAttr);
         return date ? { dateAttr, date, ...day } : null;
       })
       .filter((e) => e && e.date <= ctx.effectiveToday)
       .sort((a, b) => a.date - b.date);
+  }
+
+  function findRestViolations() {
+    const ctx = getPeriodContext();
+    if (!ctx) return [];
+
+    const entries = sortedWorkDayEntries(ctx);
 
     const violations = [];
     let prev = null;   // ostatni dzień zegarowy o ZNANYM końcu pracy
@@ -1154,6 +1217,271 @@
         `<span class="ftc-rw-icon">⚠️</span> `
         + `<span class="ftc-rw-rest">${formatMinutes(v.restMinutes)}</span> `
         + `<span class="ftc-rw-label">odpoczynku — od ${earliestStart}</span>`;
+      tds[CALC_TOTAL_TD_INDEX].appendChild(badge);
+    });
+  }
+
+  // ─── Kontrola odpoczynku tygodniowego (35h) ───────────────────────────────────
+  //
+  // Kodeks pracy art. 133 §1: w każdym tygodniu ≥35h nieprzerwanego odpoczynku.
+  // Ta przerwa w normalnym tygodniu przypada na weekend, więc sprawdzamy ją tam,
+  // gdzie realnie może zostać zjedzona: w przerwie OBEJMUJĄCEJ sobotę lub niedzielę.
+  // Kto pracował w sobotę do 21:00, w poniedziałek może zacząć najwcześniej o 08:00.
+  //
+  // Łańcuch dni zegarowych i traktowanie absencji/pracy bez godzin są DOKŁADNIE takie
+  // same jak przy odpoczynku dobowym (patrz sekcja wyżej) — obie kontrole karmią się
+  // z sortedWorkDayEntries(). Różnice:
+  //
+  //   • Przerwa może obejmować wiele dni (pt 17:00 → pn 08:00), nie tylko D → D+1.
+  //   • Weekend jest rozliczany JAKO CAŁOŚĆ: jeśli ktoś pracował w sobotę i w niedzielę,
+  //     przerw jest kilka, a odpoczynek tygodniowy to NAJDŁUŻSZA z nich. Alert pada raz,
+  //     w dniu, w którym praca wróciła po tej najdłuższej przerwie.
+  //   • Weekend, w którego okolicy łańcuch jest zerwany (praca bez godzin, otwarta
+  //     zmiana), jest POMIJANY — nie znamy wtedy realnej długości przerwy.
+  //
+  // Pierwszy weekend okresu zwykle nie alarmuje: przerwa startuje w poprzednim
+  // miesiącu, którego nie ma w DOM, więc brakuje jej początku (nie ma luki → cisza).
+
+  /** Sobota tygodnia (pn–nd), do którego należy podana data — klucz grupowania weekendu. */
+  function weekendKeyDate(date) {
+    const dow = date.getDay();                      // 0 = nd, 6 = sb
+    const shift = dow === 0 ? -1 : 6 - dow;         // niedziela należy do soboty sprzed niej
+    const sat = new Date(date.getFullYear(), date.getMonth(), date.getDate() + shift);
+    sat.setHours(0, 0, 0, 0);
+    return sat;
+  }
+
+  function dateKey(date) {
+    return `${date.getFullYear()}-${fmt2(date.getMonth() + 1)}-${fmt2(date.getDate())}`;
+  }
+
+  /**
+   * Sobota weekendu objętego przerwą od dnia `from` do dnia `to` (włącznie), albo null
+   * gdy przerwa w ogóle nie obejmuje dnia weekendowego (czyli nie jest odpoczynkiem
+   * tygodniowym — to zwykła przerwa dobowa między dniami roboczymi).
+   */
+  function weekendCoveredBy(from, to) {
+    const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+    d.setHours(0, 0, 0, 0);
+    while (d <= to) {
+      const dow = d.getDay();
+      if (dow === 6 || dow === 0) return weekendKeyDate(d);
+      d.setDate(d.getDate() + 1);
+    }
+    return null;
+  }
+
+  /**
+   * Zwraca listę naruszeń odpoczynku tygodniowego — po jednym na weekend:
+   *   [{ dateAttr, restMinutes, startMinutes, prevDateAttr, prevEndMinutes,
+   *      requiredDate, requiredMinutes, missingMinutes }]
+   * gdzie dateAttr to dzień, w którym praca wróciła za wcześnie po weekendzie,
+   * a requiredDate/requiredMinutes to najwcześniejszy dozwolony moment startu.
+   */
+  function findWeeklyRestViolations() {
+    const ctx = getPeriodContext();
+    if (!ctx) return [];
+
+    const entries = sortedWorkDayEntries(ctx);
+    const best = {};            // klucz weekendu → najdłuższa znaleziona przerwa
+    const unknown = new Set();  // weekendy z zerwanym łańcuchem — nie oceniamy
+    let prev = null;            // ostatni dzień zegarowy o ZNANYM końcu pracy
+
+    for (const e of entries) {
+      if (e.start === null) {
+        // Praca bez godzin zerywa łańcuch (nie wiemy, kiedy trwała) — absencja go nie rusza.
+        if (e.hasOpaqueWork) {
+          unknown.add(dateKey(weekendKeyDate(e.date)));
+          prev = null;
+        }
+        continue;
+      }
+
+      if (prev) {
+        const weekend = weekendCoveredBy(prev.date, e.date);
+        if (weekend) {
+          const key = dateKey(weekend);
+          const dayGap = Math.round((e.date - prev.date) / 86400000);
+          // Nakładające się wpisy dałyby wartość ujemną — pokazujemy 0, nadal jako naruszenie.
+          const restMinutes = Math.max(0, dayGap * 1440 + e.start - prev.end);
+          if (!best[key] || restMinutes > best[key].restMinutes) {
+            best[key] = {
+              dateAttr:       e.dateAttr,
+              date:           e.date,
+              restMinutes,
+              startMinutes:   e.start,
+              prevDateAttr:   prev.dateAttr,
+              prevDate:       prev.date,
+              prevEndMinutes: prev.end,
+            };
+          }
+        }
+      }
+
+      if (e.end !== null && !e.endUnknown) {
+        prev = { dateAttr: e.dateAttr, date: e.date, end: e.end };
+      } else {
+        // Otwarta zmiana → nie znamy końca pracy, kolejna przerwa jest niepoliczalna.
+        unknown.add(dateKey(weekendKeyDate(e.date)));
+        prev = null;
+      }
+    }
+
+    return Object.entries(best)
+      .filter(([key, v]) => !unknown.has(key) && v.restMinutes < MIN_WEEKLY_REST_MINUTES)
+      .map(([, v]) => {
+        // Najwcześniejszy dozwolony start: koniec pracy + 35h. Liczony od północy dnia
+        // prev, więc może wypaść nawet dzień PO dniu, w którym praca faktycznie wróciła.
+        const requiredAbs = v.prevEndMinutes + MIN_WEEKLY_REST_MINUTES;
+        const requiredDate = new Date(
+          v.prevDate.getFullYear(), v.prevDate.getMonth(),
+          v.prevDate.getDate() + Math.floor(requiredAbs / 1440)
+        );
+        requiredDate.setHours(0, 0, 0, 0);
+        return {
+          dateAttr:        v.dateAttr,
+          date:            v.date,
+          restMinutes:     v.restMinutes,
+          startMinutes:    v.startMinutes,
+          prevDateAttr:    v.prevDateAttr,
+          prevEndMinutes:  v.prevEndMinutes,
+          requiredDate,
+          requiredMinutes: requiredAbs % 1440,
+          missingMinutes:  MIN_WEEKLY_REST_MINUTES - v.restMinutes,
+        };
+      })
+      .sort((a, b) => a.date - b.date);
+  }
+
+  /**
+   * Wstrzykuje ostrzeżenie do stopki dnia, w którym praca wróciła przed upływem 35h
+   * odpoczynku tygodniowego — pod widget delty (i pod alert dobowy), bez malowania tła.
+   */
+  function injectWeeklyRestWarnings() {
+    if (!isTimesheetPage()) return;
+
+    document.querySelectorAll('.ftc-weekly-rest-warning').forEach((el) => el.remove());
+
+    findWeeklyRestViolations().forEach((v) => {
+      const footer = document.querySelector(`tr[data-group-date="${v.dateAttr}"].m-footer`);
+      if (!footer) return;
+      const tds = footer.querySelectorAll('td');
+      if (tds.length <= CALC_TOTAL_TD_INDEX) return;
+
+      // Gdy dozwolony start wypada dopiero następnego dnia, sam "HH:MM" wprowadzałby w błąd.
+      const sameDay = v.requiredDate.getTime() === v.date.getTime();
+      const earliest = (sameDay ? '' : formatDatePL(v.requiredDate) + ' ')
+        + formatClock(v.requiredMinutes);
+
+      const badge = document.createElement('div');
+      badge.className = 'ftc-weekly-rest-warning';
+      badge.title =
+        `Odpoczynek tygodniowy ${formatMinutes(v.restMinutes)} (minimum ${formatMinutes(MIN_WEEKLY_REST_MINUTES)})\n`
+        + `${formatDateAttrPL(v.prevDateAttr)} koniec ${formatClock(v.prevEndMinutes)}`
+        + ` → ${formatDateAttrPL(v.dateAttr)} start ${formatClock(v.startMinutes)}\n`
+        + `Brakuje ${formatMinutes(v.missingMinutes)} — najwcześniejszy dozwolony start: ${earliest}.\n`
+        + `Kodeks pracy art. 133 §1: co najmniej 35h nieprzerwanego odpoczynku w tygodniu.`;
+      // Spacje między spanami są celowe — badge jest zwykłym tekstem inline (nie flexem),
+      // więc niosą odstęp i trafiają do textContent.
+      badge.innerHTML =
+        `<span class="ftc-wr-icon">⚠️</span> `
+        + `<span class="ftc-wr-rest">${formatMinutes(v.restMinutes)}</span> `
+        + `<span class="ftc-wr-label">odpoczynku tyg. — od ${earliest}</span>`;
+      tds[CALC_TOTAL_TD_INDEX].appendChild(badge);
+    });
+  }
+
+  // ─── Kontrola nadgodzin (Overtime Payout bez wypracowanej normy dnia) ────────
+
+  /**
+   * Zasada firmowa: godziny oznaczone jako "Overtime Payout" (nadgodziny do wypłaty,
+   * za zgodą menedżera/TL-a) mogą pojawić się DOPIERO PONAD wypracowaną normą dnia.
+   * Kto pracował 6h i wpisał 3h nadgodzin, wpisał je źle — powinno być 8h zwykłej
+   * pracy + 1h nadgodzin.
+   *
+   * Wyjątek: WEEKEND (sob./nd.) — praca w dzień wolny w całości może być nadgodzinami,
+   * więc soboty i niedziele w ogóle nie są sprawdzane.
+   *
+   * Liczymy z sumy dnia (m-footer), bo tylko ona zna wszystkie wpisy dnia:
+   *   zwykła_praca = footer − OT_payout      (UKG wlicza OT do Calc. Total dnia)
+   *   naruszenie   ⟺ OT > 0 && zwykła_praca < norma dnia (etat osoby)
+   * Godziny absencji (Holiday, Vacation, TOIL…) siedzą w footerze, więc dzień
+   * "8h Holiday + OT" nie jest zgłaszany — norma dnia jest pokryta.
+   *
+   * Zwraca [{ dateAttr, otMinutes, regularMinutes, normPerDay, moveMinutes }],
+   * gdzie moveMinutes to ile godzin trzeba przenieść z nadgodzin do zwykłej pracy.
+   */
+  function findOvertimeViolations() {
+    const ctx = getPeriodContext();
+    if (!ctx) return [];
+
+    const normPerDay = EFF.hoursPerDay * 60;   // etat osoby (ustalony w calculate())
+    if (normPerDay <= 0) return [];
+
+    const violations = [];
+    Object.entries(collectOvertimePayoutByDate()).forEach(([dateAttr, otMinutes]) => {
+      if (otMinutes <= 0) return;
+
+      const date = ctx.dateFromAttr(dateAttr);
+      if (!date || date > ctx.effectiveToday) return;   // przyszłe dni jeszcze się nie wydarzyły
+
+      const dow = date.getDay();
+      if (dow === 0 || dow === 6) return;               // weekend — cały dzień może być OT
+
+      const footer = document.querySelector(`tr[data-group-date="${dateAttr}"].m-footer`);
+      if (!footer) return;
+      const tds = footer.querySelectorAll('td');
+      if (tds.length <= CALC_TOTAL_TD_INDEX) return;
+
+      const footerMinutes  = parseHoursToMinutes(getOriginalText(tds[CALC_TOTAL_TD_INDEX]));
+      const regularMinutes = Math.max(0, footerMinutes - otMinutes);
+      if (regularMinutes >= normPerDay) return;         // norma wypracowana — OT w porządku
+
+      violations.push({
+        dateAttr,
+        otMinutes,
+        regularMinutes,
+        normPerDay,
+        moveMinutes: Math.min(normPerDay - regularMinutes, otMinutes),
+      });
+    });
+
+    return violations;
+  }
+
+  /**
+   * Wstrzykuje ostrzeżenie do stopki dnia, w którym nadgodziny wpisano bez wypracowanej
+   * normy — pod widget delty (i pod ewentualny alert odpoczynku), bez malowania tła.
+   */
+  function injectOvertimeWarnings() {
+    if (!isTimesheetPage()) return;
+
+    document.querySelectorAll('.ftc-ot-warning').forEach((el) => el.remove());
+
+    findOvertimeViolations().forEach((v) => {
+      const footer = document.querySelector(`tr[data-group-date="${v.dateAttr}"].m-footer`);
+      if (!footer) return;
+      const tds = footer.querySelectorAll('td');
+      if (tds.length <= CALC_TOTAL_TD_INDEX) return;
+
+      const shouldOt = v.otMinutes - v.moveMinutes;
+      const badge = document.createElement('div');
+      badge.className = 'ftc-ot-warning';
+      badge.title =
+        `Nadgodziny bez wypracowanej normy dnia (${formatDateAttrPL(v.dateAttr)})\n`
+        + `Zwykła praca ${formatMinutes(v.regularMinutes)}, nadgodziny ${formatMinutes(v.otMinutes)}`
+        + ` przy normie ${formatMinutes(v.normPerDay)}.\n`
+        + `Powinno być: ${formatMinutes(v.normPerDay)} zwykłej pracy`
+        + `${shouldOt > 0 ? ` + ${formatMinutes(shouldOt)} nadgodzin` : ' i zero nadgodzin'}.\n`
+        + `Przenieś ${formatMinutes(v.moveMinutes)} z Overtime Payout do zwykłych godzin.\n`
+        + `Nadgodziny do wypłaty liczą się dopiero ponad normą dnia (weekendy są wyjątkiem).`;
+      // Spacje między spanami są celowe — badge jest zwykłym tekstem inline (nie flexem),
+      // więc niosą odstęp i trafiają do textContent.
+      badge.innerHTML =
+        `<span class="ftc-ow-icon">⚠️</span> `
+        + `<span class="ftc-ow-ot">OT ${formatMinutes(v.otMinutes)}</span> `
+        + `<span class="ftc-ow-label">przy pracy ${formatMinutes(v.regularMinutes)}`
+        + ` — przenieś ${formatMinutes(v.moveMinutes)}</span>`;
       tds[CALC_TOTAL_TD_INDEX].appendChild(badge);
     });
   }
@@ -1314,6 +1642,8 @@
     document.getElementById(BANNER_ID)?.remove();
     document.querySelectorAll('.ftc-daily-widget').forEach((el) => el.remove());
     document.querySelectorAll('.ftc-rest-warning').forEach((el) => el.remove());
+    document.querySelectorAll('.ftc-weekly-rest-warning').forEach((el) => el.remove());
+    document.querySelectorAll('.ftc-ot-warning').forEach((el) => el.remove());
     document.querySelectorAll('.ftc-incomplete-row').forEach((el) =>
       el.classList.remove('ftc-incomplete-row'));
   }
@@ -1331,6 +1661,8 @@
       else revertTimesheetTotals();
       injectDailyFlexWidgets();
       injectRestWarnings();      // po widgetach — badge ląduje pod deltą w tej samej komórce
+      injectWeeklyRestWarnings();// j.w. — 35h odpoczynku tygodniowego (weekend)
+      injectOvertimeWarnings();  // j.w. — alert o nadgodzinach bez wypracowanej normy dnia
       highlightIncompleteDays();
       return true;
     }

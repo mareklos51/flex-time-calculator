@@ -307,6 +307,65 @@ tr.ftc-incomplete-row:hover td {
   opacity: 0.85;
 }
 
+/* Ostrzeżenie o niezachowanym odpoczynku tygodniowym (35h, przerwa obejmująca weekend).
+   Ta sama konwencja co .ftc-rest-warning: inline w komórce Calc. Total, bez malowania
+   tła wiersza. Kolor fioletowy — odróżnia od alertu dobowego (czerwony) i nadgodzin
+   (pomarańczowy), bo wszystkie trzy mogą siedzieć w tej samej komórce. */
+.ftc-weekly-rest-warning {
+  display: block;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: 'Courier New', 'Consolas', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+  background: #f5f3ff;
+  border: 1px solid #c4b5fd;
+  color: #6d28d9;
+  cursor: help;
+}
+
+.ftc-weekly-rest-warning .ftc-wr-rest {
+  font-weight: 700;
+}
+
+.ftc-weekly-rest-warning .ftc-wr-label {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+/* Ostrzeżenie o nadgodzinach wpisanych bez wypracowanej normy dnia (Overtime Payout
+   poniżej etatu). Ta sama konwencja co .ftc-rest-warning: inline w komórce Calc. Total,
+   bez malowania tła wiersza. Kolor pomarańczowy — odróżnia od alertu odpoczynku (czerwony). */
+.ftc-ot-warning {
+  display: block;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: 'Courier New', 'Consolas', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #c2410c;
+  cursor: help;
+}
+
+.ftc-ot-warning .ftc-ow-ot {
+  font-weight: 700;
+}
+
+.ftc-ot-warning .ftc-ow-label {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
 /* Przycisk zamknięcia */
 #flex-time-calc-banner .ftc-close {
   margin-left: auto;

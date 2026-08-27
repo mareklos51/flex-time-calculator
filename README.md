@@ -4,8 +4,8 @@ Rozszerzenie przeglądarki **Microsoft Edge / Chrome / Firefox** dla systemu **U
 
 | Przeglądarka | Pobierz |
 |---|---|
-| **Edge / Chrome** | [better-ukg-1.5.6-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-edge-chrome.zip) |
-| **Firefox** | [better-ukg-1.5.6-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-firefox.xpi) |
+| **Edge / Chrome** | [better-ukg-1.5.7-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.7/better-ukg-1.5.7-edge-chrome.zip) |
+| **Firefox** | [better-ukg-1.5.7-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.7/better-ukg-1.5.7-firefox.xpi) |
 
 ---
 
@@ -27,6 +27,17 @@ Wtyczka odczytuje dane bezpośrednio z timesheeta i oblicza:
 Sumy godzin w wierszach podsumowujących dzień są wyświetlane w formacie **HH:MM** zamiast domyślnego `X.XX hrs`:
 
 ![Sumy godzin w formacie HH:MM](assets/time-in-hhmm-timesheet.png)
+
+### Kontrola czasu pracy (Kodeks pracy)
+
+UKG nie pilnuje wymaganych przerw, więc wtyczka robi to sama — pod sumą dnia pojawia się badge z krótkim opisem i tooltipem ze szczegółami (od kiedy do kiedy trwała praca, ile brakuje, od której można było zacząć). Alerty są **wyłącznie informacyjne** — nie zmieniają salda flex ani delt dziennych.
+
+- **Odpoczynek dobowy 11h** (czerwony badge, art. 132 §1) — dla każdej pary kolejnych dni z godzinami liczona jest przerwa „ostatni koniec dnia → pierwszy start następnego". Praca do 22:00 i start o 06:00 = 8h odpoczynku → alert `⚠️ 08:00 odpoczynku — od 09:00`. Dokładnie 11:00 jest w porządku (prawo mówi „co najmniej").
+- **Odpoczynek tygodniowy 35h** (fioletowy badge, art. 133 §1) — sprawdzana jest przerwa obejmująca weekend. Praca w sobotę do 21:00 oznacza, że w poniedziałek można zacząć najwcześniej o 08:00; wcześniejszy start → alert `⚠️ 34:00 odpoczynku tyg. — od 08:00`. Gdy pracowano i w sobotę, i w niedzielę, liczy się najdłuższa przerwa weekendu (alert pada raz).
+- **Nadgodziny bez wypracowanej normy dnia** (pomarańczowy badge) — godziny *Overtime Payout* mogą być wpisane dopiero **ponad** normą dnia. Kto pracował 6h i wpisał 3h nadgodzin, wpisał je źle — badge podpowiada, ile godzin przenieść z *Overtime Payout* do zwykłych godzin (powinno być 8h pracy + 1h nadgodzin). Weekendy są pomijane — praca w dzień wolny może być w całości nadgodzinami.
+- **Niedokończone dni** — przeszłe dni robocze bez żadnych godzin (np. *Clock In* bez *Clock Out*) są delikatnie zaznaczane czerwonym tłem.
+
+Alerty milkną, gdy nie da się ich policzyć uczciwie: dzień z pracą bez godzin (Business Trip, nieoznaczone `8.00`) albo z otwartą zmianą zerywa łańcuch, bo nie wiadomo, kiedy ta praca trwała. Absencje (Vacation, Holiday, TOIL, Childcare PTO) nie są pracą — nie przedłużają dnia i nie przerywają odpoczynku, nawet gdy mają wpisane godziny.
 
 ### Menu wtyczki
 
@@ -61,6 +72,10 @@ Działa zarówno w widoku pracownika (`My Time`) jak i w widoku menedżera (`Man
 | Overtime Payout | Wykrywane po polu `Activity` i odejmowane od sumy flex |
 | Przelicznik urlopu | Godziny ÷ 8 = dni (konfigurowalne w menu wtyczki) |
 | Odświeżanie | Automatyczne po nawigacji i zmianie danych (odśwież stronę) |
+| Odpoczynek dobowy | Przerwa „koniec dnia D → start dnia D+1" < 11h → badge w stopce dnia (art. 132 §1) |
+| Odpoczynek tygodniowy | Najdłuższa przerwa obejmująca weekend < 35h → badge w dniu powrotu do pracy (art. 133 §1) |
+| Nadgodziny | `Calc. Total − Overtime Payout < norma dnia` → badge z liczbą godzin do przeniesienia (weekendy pomijane) |
+| TOIL (Time Off in Lieu) | Pokrywa normę dnia jak praca, ale jako wypłata z banku flex jest odejmowany raz: `delta = suma dnia − OT − norma − TOIL`. Wolne zaklepane na przyszłość obciąża saldo już w dniu wpisania |
 | Korekta ręczna | Pole `🔧` w banerze i menu wtyczki — dodaje lub odejmuje podaną liczbę godzin od salda (obsługuje wartości ujemne i ułamkowe, np. `-4`, `+8`, `-4.5`) |
 
 ---
@@ -73,8 +88,8 @@ Pobierz paczkę odpowiednią dla swojej przeglądarki:
 
 | Przeglądarka | Pobierz |
 |---|---|
-| **Edge / Chrome** | [better-ukg-1.5.6-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-edge-chrome.zip) |
-| **Firefox** | [better-ukg-1.5.6-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-firefox.xpi) |
+| **Edge / Chrome** | [better-ukg-1.5.7-edge-chrome.zip](https://github.com/mareklos51/better-ukg/releases/download/v1.5.7/better-ukg-1.5.7-edge-chrome.zip) |
+| **Firefox** | [better-ukg-1.5.7-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.7/better-ukg-1.5.7-firefox.xpi) |
 
 Rozpakuj archiwum w dowolnym folderze (np. na pulpicie)
 
@@ -114,7 +129,7 @@ Kliknij ikonę puzzli na pasku przeglądarki i przypnij **Better UKG**, aby mie�
 
 ### Krok 1 – Pobierz plik
 
-Pobierz plik [better-ukg-1.5.6-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.6/better-ukg-1.5.6-firefox.xpi)
+Pobierz plik [better-ukg-1.5.7-firefox.xpi](https://github.com/mareklos51/better-ukg/releases/download/v1.5.7/better-ukg-1.5.7-firefox.xpi)
 
 ### Krok 2 – Zainstaluj
 
@@ -125,6 +140,15 @@ Gotowe — wtyczka jest zainstalowana na stałe i nie wymaga trybu dewelopera.
 ---
 
 ## Historia wersji
+
+### v1.5.7
+
+- **Alert odpoczynku dobowego (11h)** — Kodeks pracy art. 132 §1 wymaga co najmniej 11h nieprzerwanego odpoczynku na dobę. Wtyczka liczy przerwę „ostatni koniec dnia → pierwszy start następnego" i przy zbyt krótkiej wstawia czerwony badge w stopce dnia, w którym pracę rozpoczęto za wcześnie — z godziną, od której było wolno zacząć. Absencje (Vacation, Holiday, TOIL, Childcare PTO) nie przedłużają dnia pracy nawet z wpisanymi godzinami; dzień z pracą bez godzin lub z otwartą zmianą zerywa łańcuch (nie zgadujemy, kiedy ta praca trwała).
+- **Alert odpoczynku tygodniowego (35h)** — Kodeks pracy art. 133 §1 wymaga co najmniej 35h nieprzerwanego odpoczynku w tygodniu. Sprawdzana jest przerwa obejmująca weekend: po pracy w sobotę do 21:00 poniedziałek startuje najwcześniej o 08:00. Gdy pracowano w sobotę i w niedzielę, liczy się najdłuższa przerwa weekendu i alert pada raz — w dniu powrotu do pracy. Fioletowy badge, żeby odróżnić od alertu dobowego.
+- **Alert nadgodzin bez wypracowanej normy dnia** — godziny *Overtime Payout* mogą być wpisane dopiero ponad normą dnia. Kto pracował 6h i wpisał 3h nadgodzin, dostanie pomarańczowy badge z podpowiedzią, ile godzin przenieść do zwykłych godzin (powinno być 8h pracy + 1h nadgodzin). Weekendy pomijane — praca w dzień wolny może być cała nadgodzinami.
+- **Bugfix częściowy TOIL zawyżał minus** — godziny *Time Off In Lieu* były odejmowane dwa razy, więc 1h TOIL w dniu o sumie `08:39` dawała `−01:21` zamiast poprawnego `−00:21`. Teraz TOIL pokrywa normę dnia jak praca i jest odejmowany dokładnie raz (`delta = suma dnia − OT − norma − TOIL`). Dla dni w całości TOIL wynik był i jest ten sam.
+- **Zaplanowane wolne z banku flex widać od razu** — dzień przyszły z wpisanym TOIL obciąża saldo już w chwili wpisania (środa, wolne na piątek → saldo spada dziś) i nie zmienia go ponownie, gdy stanie się przeszłością.
+- **Bugfix błędna sugestia godziny wyjścia po południu** — godziny w UKG są w formacie 12-godzinnym, a am/pm siedzi w atrybucie pola, nie w jego wartości. `01:00pm` było czytane jako `01:00`, więc podpowiadana godzina wyjścia wypadała o 12h za wcześnie.
 
 ### v1.5.6
 
@@ -198,4 +222,4 @@ Gotowe — wtyczka jest zainstalowana na stałe i nie wymaga trybu dewelopera.
 
 > **Disclaimer:** This extension is for informational purposes only. The flex balance displayed is an estimate based on data read from the timesheet and may not reflect all factors affecting your working time. Always verify your hours independently using official UKG Pro reports.
 
-*Better UKG v1.5.6 by Marek Łoś · UKG Pro*
+*Better UKG v1.5.7 by Marek Łoś · UKG Pro*

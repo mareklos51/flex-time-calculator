@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.5.7] – 2026-08-27
+
+### Dodano
+- **Alert naruszenia odpoczynku dobowego (11h)** – Kodeks pracy art. 132 §1 wymaga co najmniej 11h nieprzerwanego odpoczynku na dobę; UKG tego nie pilnuje. Dla każdej pary kolejnych dni zegarowych wtyczka liczy lukę „ostatni koniec dnia D → pierwszy start dnia D+1" i przy wyniku `< 11:00` wstawia czerwony badge w stopce dnia, w którym pracę rozpoczęto za wcześnie (`⚠️ 09:30 odpoczynku — od 07:00`, tooltip z pełnym łańcuchem i brakującym czasem). Dokładnie 11:00 to cisza – prawo mówi „co najmniej". Próg jest stałą (`MIN_REST_MINUTES`), bez przełącznika w popupie.
+  - Klasyfikacja dnia (`collectWorkDayTimes()`): **ZEGAROWY** (wpis pracy z godzinami; koniec znany o ile brak otwartej zmiany), **NIEPRZEJRZYSTY** (praca tylko w `Raw Total` bez godzin – Business Trip, nieoznaczone 8.00 → *zerywa* łańcuch, bo nie wiadomo, kiedy trwała), **ODPOCZYNEK** (brak wpisów albo sama absencja – Vacation/Holiday/TOIL → przeskakiwany).
+  - Wiersze absencji są ignorowane **nawet z godzinami**: odbiór TOIL 19:00–20:00 czy Childcare PTO 15:00–15:20 to nie praca i nie może przedłużać dnia pracy. Dzień mieszany (praca + wiersz raw) zostaje zegarowy. Otwarta zmiana jest sprawdzana jako start, ale zerywa łańcuch dla dnia następnego. Pierwszy dzień okresu nie alarmuje (brak poprzednika w DOM). `end < start` → koniec `+24h` (praca przez północ).
+- **Alert naruszenia odpoczynku tygodniowego (35h)** – Kodeks pracy art. 133 §1 wymaga co najmniej 35h nieprzerwanego odpoczynku w każdym tygodniu (11h dobowego + 24h). W normalnym tygodniu przypada on na weekend, więc sprawdzana jest **przerwa obejmująca sobotę lub niedzielę**: kto pracował w sobotę do 21:00, w poniedziałek może zacząć najwcześniej o 08:00 (34h → fioletowy badge `⚠️ 34:00 odpoczynku tyg. — od 08:00`). Próg jest stałą (`MIN_WEEKLY_REST_MINUTES`).
+  - Łańcuch dni zegarowych i traktowanie absencji są **te same** co przy odpoczynku dobowym (wspólne `sortedWorkDayEntries()`), ale przerwa może obejmować wiele dni (`pt 17:00 → pn 08:00`).
+  - Weekend rozliczany **jako całość**: praca w sobotę i w niedzielę daje kilka przerw, a odpoczynkiem tygodniowym jest **najdłuższa** z nich – alert pada raz, w dniu powrotu do pracy po tej przerwie.
+  - Weekend z zerwanym łańcuchem (praca bez godzin, otwarta zmiana) jest **pomijany** – brak danych oznacza ciszę, nigdy fałszywy alert. Pierwszy weekend okresu zwykle nie alarmuje (przerwa startuje w poprzednim miesiącu, którego nie ma w DOM).
+  - Gdy najwcześniejszy dozwolony start (`koniec pracy + 35h`) wypada dzień po dniu powrotu do pracy (niedziela do 20:00 → wtorek 07:00), badge pokazuje również dzień: `od wt 07:00`.
+- **Alert nadgodzin bez wypracowanej normy dnia** – zasada firmowa: godziny *Overtime Payout* mogą być wpisane dopiero **ponad** normą dnia. Kto pracował 6h i wpisał 3h nadgodzin, wpisał je źle (powinno być 8h zwykłej pracy + 1h nadgodzin). Wtyczka liczy `zwykła_praca = Calc. Total − OT` i przy `zwykła_praca < norma dnia` wstawia pomarańczowy badge z informacją, ile godzin przenieść z *Overtime Payout* do zwykłych godzin. Weekendy są pomijane w całości (praca w dzień wolny może być cała nadgodzinami), podobnie dni przyszłe. Alert jest **wyłącznie informacyjny** – nie zmienia salda flex ani delt dziennych.
+  - Trzy badge'e (dobowy czerwony, tygodniowy fioletowy, nadgodziny pomarańczowy) mogą siedzieć w tej samej komórce *Calc. Total* pod widgetem delty – dlatego różnią się kolorem.
+
+### Zmieniono
+- **Model TOIL: godziny odbierane z banku flex są odejmowane dokładnie raz** – *Time Off In Lieu* wchodzi do *Calc. Total* dnia, więc pokrywa normę na równi z pracą, ale jest wypłatą z banku flex, więc obciąża saldo jednorazowo. Delta dnia sprowadza się do jednej formuły – tej samej w banerze i w widgetach dziennych: `footer − OT − norma − TOIL`. Do ≤1.5.6 TOIL był odejmowany **dwa razy** (raz z przepracowanych, raz w formule salda), a normę anulowały tylko dni „w całości TOIL". Dla pełnych dni TOIL wynik był ten sam (anulowana norma kompensowała drugie odjęcie), ale **częściowy TOIL zawyżał minus** o kwotę TOIL: 1h TOIL w dniu 8:39 dawało `−01:21` zamiast poprawnego `−00:21`.
+- **Zaplanowany TOIL obciąża saldo od razu po wpisaniu** – dni **przyszłe** z wpisem TOIL wchodzą do salda przez `futureToilAdjust` (`footer − norma dnia − TOIL`). Wolne wzięte z banku flex widać w saldzie już w dniu wpisania (środa, wolne zaklepane na piątek → saldo spada dziś), a ponieważ formuła jest identyczna jak dla dni minionych, **saldo nie drgnie**, gdy ten dzień stanie się przeszłością. Widgety dzienne z tego samego powodu pokazują też przyszłe dni z TOIL – inaczej ostatnie `∑` rozjeżdżałoby się z banerem.
+
+### Naprawiono
+- **Błędna sugestia godziny wyjścia dla popołudniowego startu** – godziny w UKG są w formacie **12-godzinnym**, a znacznik am/pm siedzi w sufiksie `aria-label` pola (`"Frompm"`, `"Toam"`), nie w jego wartości. Stary parser to ignorował, więc `01:00pm` czytał jako `01:00` i podpowiadana godzina wyjścia była o 12h za wczesna. Nowy `parseClockInput()` jest jedynym parserem czasu w pliku (używa go też kontrola odpoczynku).
+- **Dzień z alertem nie konwertował się na HH:MM** – konwersja sum dnia czytała surowy `textContent` komórki, odfiltrowując tylko widget delty. Po dodaniu badge'y komórka z alertem miałaby zabrudzoną wartość i nie dała się sparsować. Wszystkie elementy wstrzykiwane do komórki *Calc. Total* są teraz wypisane w `INJECTED_CELL_SELECTOR` i filtrowane przez `getOriginalText()`.
+
 ## [1.5.6] – 2026-07-27
 
 ### Naprawiono
